@@ -719,6 +719,27 @@ _CONFIGS = [
         num_train_steps=30_000,
     ),
     TrainConfig(
+        name="pi0_fast_binning_libero",
+        # Same as pi0_fast_libero but uses uniform binning tokenizer instead of FAST.
+        # Binning produces action_dim * action_horizon = 7 * 10 = 70 action tokens per step.
+        # max_token_len=300 to accommodate the larger number of action tokens.
+        model=pi0_fast.Pi0FASTConfig(
+            action_dim=7,
+            action_horizon=10,
+            max_token_len=300,
+            fast_model_tokenizer=_tokenizer.BinningTokenizer,
+        ),
+        data=LeRobotLiberoDataConfig(
+            repo_id="physical-intelligence/libero",
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=True,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi0_fast_base/params"
+        ),
+        num_train_steps=30_000,
+    ),
+    TrainConfig(
         name="pi0_fast_libero_low_mem_finetune",
         # Here is an example of loading a pi0-FAST model for LoRA finetuning.
         # For setting action_dim, action_horizon, and max_token_len, see the comments above.

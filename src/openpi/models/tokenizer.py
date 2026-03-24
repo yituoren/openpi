@@ -164,18 +164,9 @@ class BinningTokenizer:
     def tokenize(
         self, prompt: str, state: np.ndarray, actions: np.ndarray | None
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        """Tokenize a prompt and state into a sequence of tokens.
+        """Tokenize a prompt, state, and optional actions into a sequence of tokens.
 
-        Args:
-            prompt: The text prompt to tokenize.
-            state: The state array to discretize and tokenize.
-            actions: Must be None. Action encoding is not currently supported.
-
-        Returns:
-            A tuple of (tokens, token_mask, ar_mask, targets).
-
-        Raises:
-            NotImplementedError: If actions is not None.
+        Actions are discretized into n_bins uniform bins over [-1, 1].
         """
         cleaned_text = prompt.lower().strip().replace("_", " ")
 
@@ -188,8 +179,17 @@ class BinningTokenizer:
         prefix_tokens = self._paligemma_tokenizer.encode(prefix, add_bos=True)
 
         if actions is not None:
-            raise NotImplementedError("BinningTokenizer does not support encoding actions atm (only for inference use)")
-        postfix_tokens = []
+            # Flatten and discretize actions into n_bins uniform bins over [-1, 1]
+            flat_actions = actions.flatten()
+            action_tokens = np.digitize(flat_actions, bins=np.linspace(-1, 1, self._n_bins + 1)[:-1]) - 1
+            action_tokens_in_pg = self._act_tokens_to_paligemma_tokens(action_tokens)
+            postfix_tokens = (
+                self._paligemma_tokenizer.encode("Action: ")
+                + action_tokens_in_pg.tolist()
+                + self._paligemma_tokenizer.encode("|", add_eos=True)
+            )
+        else:
+            postfix_tokens = []
 
         # Create output token sequence & masks
         # AR mask is 0 on prefix (bidirectional attention) and 1 on postfix (causal attention to all previous tokens)

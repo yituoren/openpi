@@ -8,6 +8,9 @@ services:
     build:
       context: ../..
       dockerfile: examples/libero/Dockerfile
+      args:
+          - http_proxy=http://172.17.0.1:7890
+          - https_proxy=http://172.17.0.1:7890
     init: true
     tty: true
     network_mode: host
@@ -36,6 +39,9 @@ services:
     build:
       context: ../..
       dockerfile: scripts/docker/serve_policy.Dockerfile
+      args:
+          - http_proxy=http://172.17.0.1:7890
+          - https_proxy=http://172.17.0.1:7890
     init: true
     tty: true
     network_mode: host
@@ -46,6 +52,7 @@ services:
       - SERVER_ARGS
       - OPENPI_DATA_HOME=/openpi_assets
       - IS_DOCKER=true
+      - CUDA_VISIBLE_DEVICES
 
     # Comment out this block if not running on a machine with GPUs.
     deploy:
@@ -53,5 +60,5 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              count: 1
+              device_ids: ['4', '5', '6', '7']
               capabilities: [gpu]

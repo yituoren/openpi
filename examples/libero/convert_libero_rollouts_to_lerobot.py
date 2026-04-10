@@ -30,6 +30,23 @@ import numpy as np
 import tyro
 
 
+def _infer_episode_success(data: np.lib.npyio.NpzFile, ep_dir: Path) -> bool:
+    if "success" in data.files:
+        return bool(np.asarray(data["success"]).item())
+
+    # Backward-compatible fallback when older rollout dumps do not include `success` in data.npz.
+    episode_name = ep_dir.name.lower()
+    if episode_name.endswith("_success"):
+        return True
+    if episode_name.endswith("_failure"):
+        return False
+
+    raise ValueError(
+        f"Could not infer success for episode {ep_dir}: missing `success` in data.npz "
+        "and episode directory name is not suffixed with `_success` or `_failure`."
+    )
+
+
 def main(
     rollout_dir: str,
     repo_id: str,
@@ -71,6 +88,11 @@ def main(
                 "shape": (7,),
                 "names": ["actions"],
             },
+            "success": {
+                "dtype": "float32",
+                "shape": (1,),
+                "names": ["success"],
+            },
         },
         image_writer_threads=10,
         image_writer_processes=5,
@@ -84,9 +106,11 @@ def main(
 
     n_added = 0
     n_skipped = 0
+    n_success = 0
+    n_failure = 0
     for ep_dir in episode_dirs:
         data = np.load(ep_dir / "data.npz", allow_pickle=False)
-        success = bool(data["success"])
+        success = _infer_episode_success(data, ep_dir)
         if success_only and not success:
             n_skipped += 1
             continue
@@ -114,13 +138,19 @@ def main(
                     "wrist_image": wrist[t],
                     "state": states[t].astype(np.float32),
                     "actions": actions[t].astype(np.float32),
+                    "success": np.asarray([1.0 if success else 0.0], dtype=np.float32),
                     "task": task,
                 }
             )
         dataset.save_episode()
         n_added += 1
+        if success:
+            n_success += 1
+        else:
+            n_failure += 1
 
     print(f"Saved {n_added} episodes ({n_skipped} skipped) to {output_path}")
+    print(f"Episode success summary: success={n_success}, failure={n_failure}")
 
     if push_to_hub:
         dataset.push_to_hub(

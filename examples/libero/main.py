@@ -42,6 +42,8 @@ class Args:
     #################################################################################################################
     video_out_path: str = "data/libero/videos"  # Path to save videos
 
+    rollout_save_path: str = ""  # If set, dump per-episode rollouts (videos + state/action npz) for later LeRobot conversion
+
     seed: int = 7  # Random Seed (for reproducibility)
 
 
@@ -56,6 +58,10 @@ def eval_libero(args: Args) -> None:
     logging.info(f"Task suite: {args.task_suite_name}")
 
     pathlib.Path(args.video_out_path).mkdir(parents=True, exist_ok=True)
+
+    rollout_save_root = pathlib.Path(args.rollout_save_path) if args.rollout_save_path else None
+    if rollout_save_root is not None:
+        rollout_save_root.mkdir(parents=True, exist_ok=True)
 
     if args.task_suite_name == "libero_spatial":
         max_steps = 220  # longest training demo has 193 steps
@@ -99,6 +105,10 @@ def eval_libero(args: Args) -> None:
             # Setup
             t = 0
             replay_images = []
+            ep_images_256 = []
+            ep_wrist_256 = []
+            ep_states = []
+            ep_actions = []
 
             logging.info(f"Starting episode {task_episodes+1}...")
             while t < max_steps + args.num_steps_wait:
@@ -112,17 +122,25 @@ def eval_libero(args: Args) -> None:
 
                     # Get preprocessed image
                     # IMPORTANT: rotate 180 degrees to match train preprocessing
-                    img = np.ascontiguousarray(obs["agentview_image"][::-1, ::-1])
-                    wrist_img = np.ascontiguousarray(obs["robot0_eye_in_hand_image"][::-1, ::-1])
+                    img_256 = np.ascontiguousarray(obs["agentview_image"][::-1, ::-1])
+                    wrist_img_256 = np.ascontiguousarray(obs["robot0_eye_in_hand_image"][::-1, ::-1])
                     img = image_tools.convert_to_uint8(
-                        image_tools.resize_with_pad(img, args.resize_size, args.resize_size)
+                        image_tools.resize_with_pad(img_256, args.resize_size, args.resize_size)
                     )
                     wrist_img = image_tools.convert_to_uint8(
-                        image_tools.resize_with_pad(wrist_img, args.resize_size, args.resize_size)
+                        image_tools.resize_with_pad(wrist_img_256, args.resize_size, args.resize_size)
                     )
 
                     # Save preprocessed image for replay video
                     replay_images.append(img)
+
+                    state = np.concatenate(
+                        (
+                            obs["robot0_eef_pos"],
+                            _quat2axisangle(obs["robot0_eef_quat"]),
+                            obs["robot0_gripper_qpos"],
+                        )
+                    ).astype(np.float32)
 
                     if not action_plan:
                         # Finished executing previous action chunk -- compute new chunk
@@ -130,13 +148,7 @@ def eval_libero(args: Args) -> None:
                         element = {
                             "observation/image": img,
                             "observation/wrist_image": wrist_img,
-                            "observation/state": np.concatenate(
-                                (
-                                    obs["robot0_eef_pos"],
-                                    _quat2axisangle(obs["robot0_eef_quat"]),
-                                    obs["robot0_gripper_qpos"],
-                                )
-                            ),
+                            "observation/state": state,
                             "prompt": str(task_description),
                         }
 
@@ -148,6 +160,13 @@ def eval_libero(args: Args) -> None:
                         action_plan.extend(action_chunk[: args.replan_steps])
 
                     action = action_plan.popleft()
+
+                    # Record per-step rollout data (paired with the action we are about to execute)
+                    if rollout_save_root is not None:
+                        ep_images_256.append(img_256)
+                        ep_wrist_256.append(wrist_img_256)
+                        ep_states.append(state)
+                        ep_actions.append(np.asarray(action, dtype=np.float32))
 
                     # Execute action in environment
                     obs, reward, done, info = env.step(action.tolist())
@@ -173,6 +192,23 @@ def eval_libero(args: Args) -> None:
                 fps=10,
             )
 
+            # Dump per-episode raw rollout (256x256 videos + state/action npz) for LeRobot conversion.
+            if rollout_save_root is not None and len(ep_actions) > 0:
+                ep_dir = rollout_save_root / f"task{task_id:02d}_{task_segment}" / f"ep{episode_idx:03d}_{suffix}"
+                ep_dir.mkdir(parents=True, exist_ok=True)
+                imageio.mimwrite(ep_dir / "agentview.mp4", ep_images_256, fps=10)
+                imageio.mimwrite(ep_dir / "wrist.mp4", ep_wrist_256, fps=10)
+                np.savez(
+                    ep_dir / "data.npz",
+                    state=np.stack(ep_states),
+                    actions=np.stack(ep_actions),
+                    task=str(task_description),
+                    success=bool(done),
+                    task_suite=str(args.task_suite_name),
+                    task_id=int(task_id),
+                    episode_idx=int(episode_idx),
+                )
+
             # Log current results
             logging.info(f"Success: {done}")
             logging.info(f"# episodes completed so far: {total_episodes}")
@@ -181,9 +217,18 @@ def eval_libero(args: Args) -> None:
         # Log final results
         logging.info(f"Current task success rate: {float(task_successes) / float(task_episodes)}")
         logging.info(f"Current total success rate: {float(total_successes) / float(total_episodes)}")
+        _close_libero_env(env)
 
     logging.info(f"Total success rate: {float(total_successes) / float(total_episodes)}")
     logging.info(f"Total episodes: {total_episodes}")
+
+
+def _close_libero_env(env) -> None:
+    """Close robosuite/MuJoCo EGL resources before Python finalizers run."""
+    try:
+        env.close()
+    except Exception as e:
+        logging.warning("Ignoring exception while closing LIBERO environment: %s", e)
 
 
 def _get_libero_env(task, resolution, seed):

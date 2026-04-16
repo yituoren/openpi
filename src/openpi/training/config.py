@@ -20,6 +20,7 @@ import openpi.models.tokenizer as _tokenizer
 import openpi.policies.aloha_policy as aloha_policy
 import openpi.policies.droid_policy as droid_policy
 import openpi.policies.libero_policy as libero_policy
+import openpi.policies.robotwin_policy as robotwin_policy
 import openpi.shared.download as _download
 import openpi.shared.normalize as _normalize
 import openpi.training.droid_rlds_dataset as droid_rlds_dataset
@@ -65,6 +66,9 @@ class AssetsConfig:
 class DataConfig:
     # LeRobot repo id. If None, fake data will be created.
     repo_id: str | None = None
+    # Local path to the LeRobot dataset root (<root>/meta, <root>/data, ...).
+    # If provided, this will be passed to LeRobotDataset(..., root=...).
+    repo_root: str | None = None
     # Directory within the assets directory containing the data assets.
     asset_id: str | None = None
     # Contains precomputed normalization stats. If None, normalization will not be performed.
@@ -461,6 +465,52 @@ class LeRobotDROIDDataConfig(DataConfigFactory):
             model_transforms=model_transforms,
         )
 
+@dataclasses.dataclass(frozen=True)
+class LeRobotRobotWinDataConfig(DataConfigFactory):
+    """Data config for RobotWin datasets stored in LeRobot format."""
+
+    action_dim: int = 14
+    use_delta_actions: bool = False
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        repack_transform = _transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        "observation.images.cam_high": "observation.images.cam_high",
+                        "observation.images.cam_left_wrist": "observation.images.cam_left_wrist",
+                        "observation.images.cam_right_wrist": "observation.images.cam_right_wrist",
+                        "observation.state": "observation.state",
+                        "actions": "action",
+                        "prompt": "prompt",
+                    }
+                )
+            ]
+        )
+
+        data_transforms = _transforms.Group(
+            inputs=[robotwin_policy.RobotWinInputs(model_type=model_config.model_type)],
+            outputs=[robotwin_policy.RobotWinOutputs(action_dim=self.action_dim)],
+        )
+
+        if self.use_delta_actions:
+            # Apply delta on all joint dimensions except the two gripper dimensions.
+            delta_action_mask = _transforms.make_bool_mask(6, -1, 6, -1)
+            data_transforms = data_transforms.push(
+                inputs=[_transforms.DeltaActions(delta_action_mask)],
+                outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+            )
+
+        model_transforms = ModelTransformFactory()(model_config)
+
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            repack_transforms=repack_transform,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+            action_sequence_keys=("action",),
+        )
 
 @dataclasses.dataclass(frozen=True)
 class TrainConfig:
@@ -989,6 +1039,50 @@ _CONFIGS = [
     # RoboArena & PolaRiS configs.
     *roboarena_config.get_roboarena_configs(),
     *polaris_config.get_polaris_configs(),
+        TrainConfig(
+        name="pi0_fast_robotwin",
+        model=pi0_fast.Pi0FASTConfig(
+            action_dim=14,
+            action_horizon=30,
+            max_token_len=250,
+            #fast_model_tokenizer_kwargs={
+            #    "fast_tokenizer_path": "/mnt/data/lhm/test/lerobot/haomin1010/fast-tokenizer-beat-block-hammer-v1",
+            #},
+        ),
+        data=LeRobotRobotWinDataConfig(
+            repo_id="robotwin_beat_block_hammer_demo_clean_100_old",
+            base_config=DataConfig(
+                repo_root="/mnt/data/lhm/test/RoboTwin/lerobot_datasets/robotwin_beat_block_hammer_demo_clean_100_old",
+                prompt_from_task=True,
+            ),
+            action_dim=14,
+            use_delta_actions=False,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_fast_base/params"),
+        num_train_steps=30_000,
+        batch_size=192,
+    ),
+    TrainConfig(
+        name="pi05_robotwin",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_dim=32,
+            action_horizon=50,
+            discrete_state_input=False,
+        ),
+        data=LeRobotRobotWinDataConfig(
+            repo_id="robotwin_beat_block_hammer_demo_clean_100_old",
+            base_config=DataConfig(
+                repo_root="/mnt/data/lhm/test/RoboTwin/lerobot_datasets/robotwin_beat_block_hammer_demo_clean_100_old",
+                prompt_from_task=True,
+            ),
+            action_dim=14,
+            use_delta_actions=False,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=30_000,
+        batch_size=128,
+    ),
 ]
 
 if len({config.name for config in _CONFIGS}) != len(_CONFIGS):

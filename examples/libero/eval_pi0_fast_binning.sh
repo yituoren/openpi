@@ -1,10 +1,10 @@
 #!/bin/bash
 set -euo pipefail
 
-TASK_SUITES=("libero_spatial" "libero_object" "libero_goal" "libero_10" "libero_90")
+TASK_SUITES=("libero_10")
 
 COMPOSE_FILE=examples/libero/compose.yml
-SERVER_ARGS_VALUE="--env LIBERO policy:checkpoint --policy.config pi0_fast_binning_libero --policy.dir checkpoints/pi0_fast_binning_libero/test/29999"
+SERVER_ARGS_VALUE="--env LIBERO policy:checkpoint --policy.config pi0_fast_binning_libero --policy.dir checkpoints/pi0_fast_binning_libero/test/99999"
 
 # Inside the libero container, the host's `data/` is mounted at `/data` (see compose.yml).
 # Per-suite rollouts are dumped under this directory and then converted to LeRobot format.
@@ -21,7 +21,7 @@ trap cleanup EXIT
 for SUITE in "${TASK_SUITES[@]}"; do
   echo "========== Evaluating task suite: $SUITE =========="
   SERVER_ARGS="${SERVER_ARGS_VALUE}" \
-  CLIENT_ARGS="--args.task-suite-name $SUITE --args.num-trials-per-task 10 --args.rollout-save-path ${ROLLOUT_DIR_IN_CONTAINER}/${SUITE}" \
+  CLIENT_ARGS="--args.task-suite-name $SUITE --args.num-trials-per-task 100 --args.rollout-save-path ${ROLLOUT_DIR_IN_CONTAINER}/${SUITE}" \
     docker compose -f "${COMPOSE_FILE}" up --build --exit-code-from runtime
   cleanup
   echo "========== Finished: $SUITE =========="

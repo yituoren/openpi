@@ -19,6 +19,18 @@ import openpi.transforms as _transforms
 T_co = TypeVar("T_co", covariant=True)
 
 
+def _ensure_hf_list_feature_compat() -> None:
+    """Compatibility patch for LeRobot parquet metadata using ``_type=List``."""
+    try:
+        from datasets.features import features as hf_features
+
+        feature_types = getattr(hf_features, "_FEATURE_TYPES", None)
+        if isinstance(feature_types, dict) and "List" not in feature_types and "Sequence" in feature_types:
+            feature_types["List"] = feature_types["Sequence"]
+    except Exception as exc:  # pragma: no cover
+        logging.warning(f"Could not patch datasets feature compatibility: {exc}")
+
+
 class Dataset(Protocol[T_co]):
     """Interface for a dataset with random access."""
 
@@ -131,15 +143,18 @@ def create_torch_dataset(
     data_config: _config.DataConfig, action_horizon: int, model_config: _model.BaseModelConfig
 ) -> Dataset:
     """Create a dataset for training."""
+    _ensure_hf_list_feature_compat()
+
     repo_id = data_config.repo_id
     if repo_id is None:
         raise ValueError("Repo ID is not set. Cannot create dataset.")
     if repo_id == "fake":
         return FakeDataset(model_config, num_samples=1024)
 
-    dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(repo_id)
+    dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(repo_id, root=data_config.repo_root)
     dataset = lerobot_dataset.LeRobotDataset(
         data_config.repo_id,
+        root=data_config.repo_root,
         delta_timestamps={
             key: [t / dataset_meta.fps for t in range(action_horizon)] for key in data_config.action_sequence_keys
         },
